@@ -14,8 +14,8 @@ class Decorators:
             try:
                 return f(*args, **kwargs)
             except Exception as exc:
-                logger.error(pprint.pformat(traceback.format_exception(type(exc), exc, exc.__traceback__   )))
-                return None
+                logger.error(pprint.pformat(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+                raise exc
         return _log_exception
 
     @staticmethod

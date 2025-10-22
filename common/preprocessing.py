@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split as tts
 logger = logging.getLogger(__name__)
 
 
-class DatasetPreprocessor:
+class TabularDatasetPreprocessor:
     def preprocess_data(
         self,
         X: Union[pd.DataFrame, np.ndarray],

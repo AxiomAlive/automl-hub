@@ -16,10 +16,11 @@ dependencies = [
     "pandas==2.2.3",
     "pytest==8.3.5",
     "seaborn==0.13.2",
-    "setuptools==73.0.1",
+    "setuptools>=80.9.0",
     "torch==2.7.0",
     "tqdm==4.66.5",
 ]
 
 [tool.uv.sources]
-imbaml = { git = "https://github.com/AxiomAlive/imbaml.git" }
+# imbaml = { git = "https://github.com/AxiomAlive/imbaml.git", branch = "ensembling" }
+imbaml = { path = "../imbaml", editable = true }

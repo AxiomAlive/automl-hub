@@ -5,18 +5,20 @@ import re
 from abc import ABC, abstractmethod
 from io import StringIO
 from typing import Optional, Union, final, List, Dict
-
+import autogluon.tabular
+import flaml.automl.automl
 import numpy as np
 import pandas as pd
 import ray
 from sklearn.exceptions import NotFittedError
 from sklearn.metrics import fbeta_score, balanced_accuracy_score, recall_score, precision_score, average_precision_score
-
 from imbaml.main import ImbamlOptimizer
 from utils.decorators import Decorators
-from autogluon.tabular import TabularDataset, TabularPredictor
+from autogluon.tabular import TabularDataset as AutoGluonTabularDataset, TabularPredictor as AutoGluonTabularPredictor
 from autogluon.core.metrics import make_scorer
 from flaml import AutoML as FLAMLPredictor
+
+from common.domain import TabularDataset
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +27,8 @@ class AutoML(ABC):
     @abstractmethod
     def fit(
         self,
-        X_train: Union[np.ndarray, pd.DataFrame],
-        y_train: Union[np.ndarray, pd.Series],
-        metric_name: str,
-        target_label: Optional[str]
+        dataset: TabularDataset,
+        metric: str,
     ) -> None:
         raise NotImplementedError()
 
@@ -43,9 +43,9 @@ class AutoML(ABC):
     def score(
         self,
         metrics: Union[str, List[str]],
-        y_test: Optional[Union[pd.DataFrame, np.ndarray]]=None,
-        y_pred: Optional[Union[pd.DataFrame, np.ndarray]]=None,
-        pos_label : Optional[int]=None,
+        y_test: Optional[Union[pd.DataFrame, np.ndarray]] = None,
+        y_pred: Optional[Union[pd.DataFrame, np.ndarray]] = None,
+        pos_label: Optional[int] = None,
     ) -> None:
 
         calculate_metric_score_kwargs = {
@@ -95,6 +95,14 @@ class AutoML(ABC):
             average_precision = average_precision_score(y_test, y_pred, pos_label=pos_label)
             logger.info(f"Average precision: {average_precision:.3f}")
 
+    @property
+    def dataset_size(self):
+        return self._dataset_size
+    
+    @dataset_size.setter
+    def dataset_size(self, value):
+        self.dataset_size = value
+
     def __str__(self):
         return self.__class__.__name__
 
@@ -106,8 +114,8 @@ class Imbaml(AutoML):
         verbosity=0,
         leaderboard=False
     ):
-        self._dataset_size: Optional[int] = None
         self._verbosity = verbosity
+        self._fitted_model= None
         if sanity_check:
             self._n_evals = 6
             self._sanity_check = True
@@ -119,31 +127,26 @@ class Imbaml(AutoML):
         super()._configure_environment()
         self._configure_environment()
 
-    @Decorators.log_exception
     def fit(
         self,
-        X_train: Union[np.ndarray, pd.DataFrame],
-        y_train: Union[np.ndarray, pd.Series],
-        metric_name: str,
-        target_label: Optional[str]
+        dataset: TabularDataset,
+        metric: str,
     ) -> None:
         n_evals = self._n_evals
         if not self._sanity_check:
-            if self._dataset_size is None:
-                raise ValueError("Dataset size is undefined.")
             if self._dataset_size > 50:
                 n_evals //= 4
             elif self._dataset_size > 5:
                 n_evals //= 3
 
         optimizer = ImbamlOptimizer(
-            metric=metric_name,
+            metric=metric,
             re_init=False,
             n_evals=n_evals,
             verbosity=self._verbosity
         )
 
-        fit_results = optimizer.fit(X_train, y_train)
+        fit_results = optimizer.fit(dataset.X, dataset.y)
 
         if self._leaderboard:
             val_losses = {}
@@ -158,7 +161,7 @@ class Imbaml(AutoML):
 
         best_trial_metrics = getattr(best_trial, 'metrics', None)
         if best_trial_metrics is None:
-            raise ValueError("Task run failed. No best trial.")
+            raise ValueError("Task run failed. No best trial found.")
 
         best_validation_loss = best_trial_metrics.get('loss')
 
@@ -171,17 +174,9 @@ class Imbaml(AutoML):
         model_with_loss = {best_model: best_validation_loss}
         self._log_val_loss_alongside_fitted_model(model_with_loss)
 
-        best_model.fit(X_train, y_train)
+        best_model.fit(dataset.X, dataset.y)
 
         self._fitted_model = best_model
-
-    @property
-    def dataset_size(self):
-        return self._dataset_size
-
-    @dataset_size.setter
-    def dataset_size(self, value):
-        self._dataset_size = value
 
     def _configure_environment(self, seed=42) -> None:
         ray.init(object_store_memory=10**9, log_to_driver=False, logging_level=logging.ERROR)
@@ -195,6 +190,7 @@ class AutoGluon(AutoML):
     def __init__(self, preset='medium_quality', verbosity=0):
         self._preset = preset
         self._verbosity = verbosity
+        self._fitted_model: Optional[AutoGluonTabularPredictor] = None
 
     @property
     def preset(self):
@@ -215,7 +211,7 @@ class AutoGluon(AutoML):
         if self._fitted_model is None:
             raise NotFittedError()
 
-        dataset_test = TabularDataset(X_test)
+        dataset_test = AutoGluonTabularDataset(X_test)
         predictions = self._fitted_model.predict(dataset_test)
 
         return predictions
@@ -223,27 +219,25 @@ class AutoGluon(AutoML):
     @Decorators.log_exception
     def fit(
         self,
-        X_train: Union[np.ndarray, pd.DataFrame],
-        y_train: Union[np.ndarray, pd.Series],
-        metric_name: str,
-        target_label: Optional[str]
+        dataset: TabularDataset,
+        metric: str,
     ) -> None:
-        if metric_name not in ['f1', 'balanced_accuracy', 'average_precision']:
-            raise ValueError(f"Metric {metric_name} is not supported.")
+        if metric not in ['f1', 'balanced_accuracy', 'average_precision']:
+            raise ValueError(f"Metric {metric} is not supported.")
 
-        if target_label is None and isinstance(X_train, np.ndarray):
-            Xy_train = pd.DataFrame(data=np.column_stack([X_train, y_train]))
-            target_label = list(Xy_train.columns)[-1]
+        if y_label is None and isinstance(dataset.X, np.ndarray):
+            Xdataset.y = pd.DataFrame(data=np.column_stack([dataset.X, dataset.y]))
+            y_label = list(Xdataset.y.columns)[-1]
         else:
-            Xy_train = pd.DataFrame(
-                data=np.column_stack([X_train, y_train]),
-                columns=[*X_train.columns, target_label])
+            Xdataset.y = pd.DataFrame(
+                data=np.column_stack([dataset.X, dataset.y]),
+                columns=[*dataset.X.columns, y_label])
 
-        dataset = TabularDataset(Xy_train)
-        predictor = TabularPredictor(
+        dataset = AutoGluonTabularDataset(Xdataset.y)
+        predictor = AutoGluonTabularPredictor(
             problem_type='binary',
-            label=target_label,
-            eval_metric=metric_name,
+            label=y_label,
+            eval_metric=metric,
             verbosity=self._verbosity
         ).fit(dataset)
 
@@ -264,20 +258,23 @@ class AutoGluon(AutoML):
 
 class FLAML(AutoML):
     def __init__(self):
-        pass
+        self._fitted_model: Optional[FLAMLPredictor] = None
 
-    def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: Union[np.ndarray, pd.Series], metric_name: str,
-            target_label: Optional[str]) -> None:
-        metric = None
-        if metric_name == 'average_precision':
-            metric = 'ap'
-        elif metric_name == 'f1':
-            metric = 'f1'
-        elif metric_name in ['balanced_accuracy', 'precision', 'recall']:
-            raise ValueError(f"Metric {metric_name} is not supported.")
+    def fit(
+        self,
+        dataset: TabularDataset,
+        metric: str,
+    ) -> None:
+        metric_name = None
+        if metric == 'average_precision':
+            metric_name = 'ap'
+        elif metric == 'f1':
+            metric_name = 'f1'
+        elif metric in ['balanced_accuracy', 'precision', 'recall']:
+            raise ValueError(f"Metric {metric} is not supported.")
 
         automl = FLAMLPredictor()
-        automl.fit(X_train, y_train, metric=metric)
+        automl.fit(dataset.X, dataset.y, metric=metric_name)
 
         best_loss = automl.best_loss
         best_model = automl.best_estimator

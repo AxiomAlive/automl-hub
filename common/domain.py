@@ -7,9 +7,10 @@ import pandas as pd
 
 
 @dataclass
-class Dataset:
+class TabularDataset:
     id: int
     name: str
     X: Union[pd.DataFrame, np.ndarray]
     y: Union[pd.Series, np.ndarray]
-    target_label: Optional[str] = None
+    y_label: Optional[str] = None
+    size: Optional[int] = None

@@ -14,9 +14,9 @@ import pandas as pd
 from sklearn.exceptions import NotFittedError
 
 from common.automl import Imbaml, AutoGluon, FLAML
-from common.domain import Dataset
-from common.preprocessing import DatasetPreprocessor
-from benchmark.repository import FittedModel, ZenodoRepository, DatasetRepository
+from common.domain import TabularDataset
+from common.preprocessing import TabularDatasetPreprocessor
+from benchmark.repository import FittedModel, ZenodoRepository, TabularDatasetRepository
 from utils.decorators import Decorators
 
 logger = logging.getLogger(__name__)
@@ -64,25 +64,26 @@ class AutoMLRunner(ABC):
         logger.info(f"Optimization metrics are {self._metrics}.")
 
     @final
-    def _run_on_task(self, task: Dataset) -> None:
-        if task is None:
-            logger.error("Task run failed. Reason: task is undefined.")
+    def _run_on_dataset(self, dataset: TabularDataset) -> None:
+        if dataset is None:
+            logger.error("dataset run failed. Reason: dataset is undefined.")
             return
 
-        if isinstance(task.X, np.ndarray) or isinstance(task.X, pd.DataFrame):
-            preprocessor = DatasetPreprocessor()
-            preprocessed_data = preprocessor.preprocess_data(task.X, task.y.squeeze())
+        if isinstance(dataset.X, np.ndarray) or isinstance(dataset.X, pd.DataFrame):
+            preprocessor = TabularDatasetPreprocessor()
+            preprocessed_data = preprocessor.preprocess_data(dataset.X, dataset.y.squeeze())
 
             assert preprocessed_data is not None
 
             X, y = preprocessed_data
             X_train, X_test, y_train, y_test = preprocessor.split_data_on_train_and_test(X, y.squeeze())
         else:
-            raise TypeError(f"pd.DataFrame or np.ndarray was expected. Got: {type(task.X)}")
+            raise TypeError(f"pd.DataFrame or np.ndarray was expected. Got: {type(dataset.X)}")
 
-        logger.info(f"{task.id}...Loaded dataset name: {task.name}.")
+        logger.info(f"{dataset.id}...Loaded dataset name: {dataset.name}.")
         logger.info(f'Rows: {X_train.shape[0]}. Columns: {X_train.shape[1]}')
 
+        
         class_belongings = Counter(y_train)
         logger.info(class_belongings)
 
@@ -97,15 +98,23 @@ class AutoMLRunner(ABC):
         if number_of_positives is None:
             raise ValueError("Unknown positive class label.")
 
-        dataset_size_in_mb = int(pd.DataFrame(X_train).memory_usage(deep=True).sum() / (1024 ** 2))
-        logger.info(f"Train sample size is {dataset_size_in_mb} mb.")
-        if isinstance(self._automl, Imbaml):
-            self._automl.dataset_size = dataset_size_in_mb
+        training_dataset = TabularDataset(
+            id=dataset.id,
+            name=dataset.name,
+            X=X_train,
+            y=y_train,
+            y_label=dataset.y_label
+        )
+
+        training_dataset_size = int(pd.DataFrame(X_train).memory_usage(deep=True).sum() / (1024 ** 2))
+        logger.info(f"Train sample size is {training_dataset_size} mb.")
+
+        training_dataset.size = training_dataset_size
 
         for metric in self._metrics:
             start_time = time.time()
-            self._automl.fit(X_train, y_train, metric, task.target_label)
-            logger.info(f"Training on dataset (id={task.id}, name={task.name}) successfully finished.")
+            self._automl.fit(training_dataset, metric)
+            logger.info(f"Training on dataset (id={dataset.id}, name={dataset.name}) successfully finished.")
 
             time_passed = time.time() - start_time
             logger.info(f"Training time is {time_passed // 60} min.")
@@ -116,20 +125,20 @@ class AutoMLRunner(ABC):
 
 
 class AutoMLSingleRunner(AutoMLRunner):
-    def __init__(self, task: Dataset, metric: str = 'f1', *args, **kwargs):
+    def __init__(self, dataset: TabularDataset, metric: str = 'f1', *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._metrics = [metric]
-        self._task = task
+        self._dataset = dataset
 
         self._configure_environment()
 
     @Decorators.log_exception
     def run(self) -> None:
-        self._run_on_task(self._task)
+        self._run_on_dataset(self._dataset)
 
 
 class AutoMLBenchmarkRunner(AutoMLRunner):
-    def __init__(self, metrics: Optional[List[str]], repository: DatasetRepository = ZenodoRepository(), *args, **kwargs):
+    def __init__(self, metrics: Optional[List[str]], repository: TabularDatasetRepository = ZenodoRepository(), *args, **kwargs):
         super().__init__(*args, **kwargs)
         if metrics is None:
             self._metrics = ['f1']
@@ -145,6 +154,6 @@ class AutoMLBenchmarkRunner(AutoMLRunner):
 
     @Decorators.log_exception
     def run(self) -> None:
-        for task in self._repository.datasets:
-            self._run_on_task(task)
+        for dataset in self._repository.datasets:
+            self._run_on_dataset(dataset)
 
