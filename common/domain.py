@@ -14,3 +14,9 @@ class TabularDataset:
     y: Union[pd.Series, np.ndarray]
     y_label: Optional[str] = None
     size: Optional[int] = None
+
+@dataclass
+class MLTask:
+    id: int
+    dataset: TabularDataset
+    metric: str

@@ -18,7 +18,7 @@ from autogluon.tabular import TabularDataset as AutoGluonTabularDataset, Tabular
 from autogluon.core.metrics import make_scorer
 from flaml import AutoML as FLAMLPredictor
 
-from common.domain import TabularDataset
+from common.domain import TabularDataset, MLTask
 
 logger = logging.getLogger(__name__)
 
@@ -27,24 +27,23 @@ class AutoML(ABC):
     @abstractmethod
     def fit(
         self,
-        dataset: TabularDataset,
-        metric: str,
+        task: MLTask,
     ) -> None:
         raise NotImplementedError()
 
     def predict(self, X_test: Union[np.ndarray, pd.DataFrame]) -> Union[pd.DataFrame, np.ndarray]:
         if self._fitted_model is None:
             raise NotFittedError()
-
         predictions = self._fitted_model.predict(X_test)
+        
         return predictions
 
     @final
     def score(
         self,
         metrics: Union[str, List[str]],
-        y_test: Optional[Union[pd.DataFrame, np.ndarray]] = None,
-        y_pred: Optional[Union[pd.DataFrame, np.ndarray]] = None,
+        y_test: Union[pd.DataFrame, np.ndarray],
+        y_pred: Union[pd.DataFrame, np.ndarray],
         pos_label: Optional[int] = None,
     ) -> None:
 
@@ -74,10 +73,11 @@ class AutoML(ABC):
             model_log = pprint.pformat(f"Best model class: {m}", compact=True)
             logger.info(model_log)
 
-    # TODO: persist seed for usage of the same value anywhere.
     def _configure_environment(self, seed=42) -> None:
         np.random.seed(seed)
-        logger.info(f"Seed = {seed}.")
+        logger.debug(f"Seed = {seed}.")
+        
+        self._seed = seed
 
     @final
     def _calculate_metric_score(self, metric: str, *args, **kwargs) -> None:
@@ -86,7 +86,7 @@ class AutoML(ABC):
         pos_label = kwargs.get("pos_label")
 
         if metric == 'f1':
-            f1 = fbeta_score(y_test, kwargs.get("y_pred"), beta=1, pos_label=pos_label)
+            f1 = fbeta_score(y_test, y_pred, beta=1, pos_label=pos_label)
             logger.info(f"F1: {f1:.3f}")
         elif metric == 'balanced_accuracy':
             balanced_accuracy = balanced_accuracy_score(y_test, y_pred)
@@ -94,14 +94,6 @@ class AutoML(ABC):
         elif metric == 'average_precision':
             average_precision = average_precision_score(y_test, y_pred, pos_label=pos_label)
             logger.info(f"Average precision: {average_precision:.3f}")
-
-    @property
-    def dataset_size(self):
-        return self._dataset_size
-    
-    @dataset_size.setter
-    def dataset_size(self, value):
-        self.dataset_size = value
 
     def __str__(self):
         return self.__class__.__name__
@@ -129,21 +121,24 @@ class Imbaml(AutoML):
 
     def fit(
         self,
-        dataset: TabularDataset,
-        metric: str,
+        task: MLTask,
     ) -> None:
+        dataset = task.dataset
+        metric = task.metric
+
         n_evals = self._n_evals
         if not self._sanity_check:
-            if self._dataset_size > 50:
+            if dataset.size > 50:
                 n_evals //= 4
-            elif self._dataset_size > 5:
+            elif dataset.size > 5:
                 n_evals //= 3
 
         optimizer = ImbamlOptimizer(
             metric=metric,
             re_init=False,
             n_evals=n_evals,
-            verbosity=self._verbosity
+            verbosity=self._verbosity,
+            random_state=self._seed
         )
 
         fit_results = optimizer.fit(dataset.X, dataset.y)
@@ -164,13 +159,11 @@ class Imbaml(AutoML):
             raise ValueError("Task run failed. No best trial found.")
 
         best_validation_loss = best_trial_metrics.get('loss')
-
         best_algorithm_configuration = best_trial_metrics.get('config').get('search_configurations')
-
         best_model_class = best_algorithm_configuration.get('model_class')
         best_algorithm_configuration.pop('model_class')
-
         best_model = best_model_class(**best_algorithm_configuration)
+        
         model_with_loss = {best_model: best_validation_loss}
         self._log_val_loss_alongside_fitted_model(model_with_loss)
 
@@ -210,7 +203,6 @@ class AutoGluon(AutoML):
     def predict(self, X_test: Union[pd.Series, np.ndarray]) -> Union[pd.Series, np.ndarray]:
         if self._fitted_model is None:
             raise NotFittedError()
-
         dataset_test = AutoGluonTabularDataset(X_test)
         predictions = self._fitted_model.predict(dataset_test)
 
@@ -219,27 +211,30 @@ class AutoGluon(AutoML):
     @Decorators.log_exception
     def fit(
         self,
-        dataset: TabularDataset,
-        metric: str,
+        task: MLTask,
     ) -> None:
+        dataset = task.dataset
+        metric = task.metric
+        y_label = dataset.y_label
+
         if metric not in ['f1', 'balanced_accuracy', 'average_precision']:
             raise ValueError(f"Metric {metric} is not supported.")
 
         if y_label is None and isinstance(dataset.X, np.ndarray):
-            Xdataset.y = pd.DataFrame(data=np.column_stack([dataset.X, dataset.y]))
-            y_label = list(Xdataset.y.columns)[-1]
+            Xy = pd.DataFrame(data=np.column_stack([dataset.X, dataset.y]))
+            y_label = list(Xy.columns)[-1]
         else:
-            Xdataset.y = pd.DataFrame(
+            Xy = pd.DataFrame(
                 data=np.column_stack([dataset.X, dataset.y]),
-                columns=[*dataset.X.columns, y_label])
+                columns=[*dataset.X.columns, dataset.y_label])
 
-        dataset = AutoGluonTabularDataset(Xdataset.y)
+        ag_dataset = AutoGluonTabularDataset(Xy)
         predictor = AutoGluonTabularPredictor(
             problem_type='binary',
             label=y_label,
             eval_metric=metric,
             verbosity=self._verbosity
-        ).fit(dataset)
+        ).fit(ag_dataset)
 
         val_scores = predictor.leaderboard().get('score_val')
         if val_scores is None or len(val_scores) == 0:
@@ -262,9 +257,11 @@ class FLAML(AutoML):
 
     def fit(
         self,
-        dataset: TabularDataset,
-        metric: str,
+        task: MLTask,
     ) -> None:
+        dataset = task.dataset
+        metric = task.metric
+
         metric_name = None
         if metric == 'average_precision':
             metric_name = 'ap'

@@ -14,7 +14,7 @@ import pandas as pd
 from sklearn.exceptions import NotFittedError
 
 from common.automl import Imbaml, AutoGluon, FLAML
-from common.domain import TabularDataset
+from common.domain import TabularDataset, MLTask
 from common.preprocessing import TabularDatasetPreprocessor
 from benchmark.repository import FittedModel, ZenodoRepository, TabularDatasetRepository
 from utils.decorators import Decorators
@@ -66,7 +66,7 @@ class AutoMLRunner(ABC):
     @final
     def _run_on_dataset(self, dataset: TabularDataset) -> None:
         if dataset is None:
-            logger.error("dataset run failed. Reason: dataset is undefined.")
+            logger.error("Run failed. Reason: dataset is undefined.")
             return
 
         if isinstance(dataset.X, np.ndarray) or isinstance(dataset.X, pd.DataFrame):
@@ -107,21 +107,27 @@ class AutoMLRunner(ABC):
         )
 
         training_dataset_size = int(pd.DataFrame(X_train).memory_usage(deep=True).sum() / (1024 ** 2))
-        logger.info(f"Train sample size is {training_dataset_size} mb.")
-
         training_dataset.size = training_dataset_size
+        logger.debug(f"Train sample size is approximately {training_dataset.size} mb.")
 
+        temp_id = 1
         for metric in self._metrics:
-            start_time = time.time()
-            self._automl.fit(training_dataset, metric)
-            logger.info(f"Training on dataset (id={dataset.id}, name={dataset.name}) successfully finished.")
+            task  = MLTask(
+                id=temp_id,
+                dataset=training_dataset,
+                metric=metric
+            )
+            temp_id += 1
 
+            start_time = time.time()
+            self._automl.fit(task)
             time_passed = time.time() - start_time
+            
+            logger.info(f"Training successfully finished.")
             logger.info(f"Training time is {time_passed // 60} min.")
 
-            y_predictions = self._automl.predict(X_test)
-            # TODO: evaluate on additional metrics for a single runner.
-            self._automl.score(metric, y_test, y_predictions, positive_class_label)
+            y_predicted = self._automl.predict(X_test)
+            self._automl.score(metric, y_test, y_predicted, positive_class_label)
 
 
 class AutoMLSingleRunner(AutoMLRunner):
@@ -151,6 +157,10 @@ class AutoMLBenchmarkRunner(AutoMLRunner):
     @property
     def repository(self):
         return self._repository
+    
+    @repository.setter
+    def repository(self, value):
+        self._repository = value
 
     @Decorators.log_exception
     def run(self) -> None:
