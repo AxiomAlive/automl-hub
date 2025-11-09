@@ -14,9 +14,9 @@ import numpy as np
 import pandas as pd
 from sklearn.exceptions import NotFittedError
 
-from common.automl import Imbaml, AutoGluon, FLAML
-from common.domain import TabularDataset, MLTask
-from common.preprocessing import TabularDatasetPreprocessor
+from core.automl import Imbaml, AutoGluon, FLAML
+from core.domain import TabularDataset, MLTask
+from core.preprocessing import TabularDatasetPreprocessor
 from benchmark.repository import FittedModel, ZenodoRepository, TabularDatasetRepository
 from utils.decorators import Decorators
 
@@ -28,7 +28,7 @@ class AutoMLRunner(ABC):
         self,
         automl,
         metric,
-        log_to_file=True,
+        log_to_file,
         *args,
         **kwargs
     ):
@@ -152,17 +152,18 @@ class AutoMLRunner(ABC):
             y_predicted = self._automl.predict(X_test)
             self._automl.score(metric, y_test, y_predicted, positive_class_label)
 
-
+# TODO: support presets and leaderboard.
 class AutoMLSingleRunner(AutoMLRunner):
     def __init__(
         self,
         dataset: TabularDataset,
-        automl: str = 'ag',
+        automl = 'ag',
         metric: Union[str, List[str]] = 'f1',
+        log_to_file = False,
         *args,
         **kwargs
     ):
-        super().__init__(automl, metric, *args, **kwargs)
+        super().__init__(automl, metric, log_to_file, *args, **kwargs)
         self._dataset = dataset
 
         self._configure_environment()
@@ -175,13 +176,14 @@ class AutoMLSingleRunner(AutoMLRunner):
 class AutoMLBenchmarkRunner(AutoMLRunner):
     def __init__(
         self,
-        automl: str = 'ag',
+        automl = 'ag',
         metric: Union[str, List[str]] = 'f1',
+        log_to_file = True,
         repository: TabularDatasetRepository = ZenodoRepository(),
         *args,
         **kwargs
     ):
-        super().__init__(automl, metric, *args, **kwargs)
+        super().__init__(automl, metric, log_to_file, *args, **kwargs)
         self._repository = repository
 
         self._configure_environment()

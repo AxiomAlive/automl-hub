@@ -18,7 +18,7 @@ from autogluon.tabular import TabularDataset as AutoGluonTabularDataset, Tabular
 from autogluon.core.metrics import make_scorer
 from flaml import AutoML as FLAMLPredictor
 
-from common.domain import TabularDataset, MLTask
+from core.domain import TabularDataset, MLTask
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +68,9 @@ class AutoML(ABC):
     def _log_val_loss_alongside_fitted_model(self, losses: Dict[str, np.float64]) -> None:
         for m, l in losses.items():
             # TODO: different output for leaderboard.
-            logger.info(f"Best validation loss: {abs(l):.3f}")
+            logger.info(f"Validation loss: {abs(l):.3f}")
 
-            model_log = pprint.pformat(f"Best model class: {m}", compact=True)
+            model_log = pprint.pformat(f"ML model: {m}", compact=True)
             logger.info(model_log)
 
     def _configure_environment(self, seed=42) -> None:
@@ -142,14 +142,16 @@ class Imbaml(AutoML):
         )
 
         fit_results = optimizer.fit(dataset.X, dataset.y)
-
+        
+        leaderboard = sorted(fit_results, key=lambda el: el.metrics.get('loss', 0))[:10]
         if self._leaderboard:
             val_losses = {}
-            for i, result in enumerate(fit_results):
+            for i, result in enumerate(leaderboard):
                 if result.error:
-                    logger.info(f"Trial #{i} had an error:", result.error)
+                    logger.info(f"Trial #{i} had an error: {result.error}.")
                     continue
-                val_losses[result.metrics['model']] = result.metrics['loss']
+                model = str(result.metrics['config']['search_configurations'].items())
+                val_losses[model] = result.metrics['loss']
             self._log_val_loss_alongside_fitted_model(val_losses)
 
         best_trial = fit_results.get_best_result(metric='loss', mode='min')
@@ -193,9 +195,15 @@ class AutoGluon(AutoML):
     def preset(self, preset):
         if preset not in ['medium_quality', 'good_quality', 'high_quality', 'best_quality', 'extreme_quality']:
             raise ValueError(
-                """
-                Invalid value of parameter preset.
-                Options available: ['medium_quality', 'good_quality', 'high_quality', 'best_quality', 'extreme_quality'].
+                f"""
+                Invalid preset value: {preset}.
+                Options available: [
+                    'medium_quality',
+                    'good_quality',
+                    'high_quality',
+                    'best_quality',
+                    'extreme_quality'
+                ].
                 """)
         self._preset = preset
 
@@ -216,19 +224,24 @@ class AutoGluon(AutoML):
         dataset = task.dataset
         metric = task.metric
         y_label = dataset.y_label
+        if y_label is None:         
+            y_label = "Target"
 
         if metric not in ['f1', 'balanced_accuracy', 'average_precision']:
-            raise ValueError(f"Metric {metric} is not supported.")
-
-        if y_label is None and isinstance(dataset.X, np.ndarray):
+            raise ValueError(f"Metric {metric} is not supported currently.")
+        
+        if isinstance(dataset.X, np.ndarray):
             Xy = pd.DataFrame(data=np.column_stack([dataset.X, dataset.y]))
-            y_label = list(Xy.columns)[-1]
-        else:
+        elif isinstance(dataset.X, pd.DataFrame):
             Xy = pd.DataFrame(
                 data=np.column_stack([dataset.X, dataset.y]),
                 columns=[*dataset.X.columns, dataset.y_label])
+        else:
+            raise TypeError()
+
 
         ag_dataset = AutoGluonTabularDataset(Xy)
+        # logger.info(f"AG dataset,", ag_dataset)
         predictor = AutoGluonTabularPredictor(
             problem_type='binary',
             label=y_label,

@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from imblearn.datasets import fetch_datasets
 
-from common.domain import TabularDataset
+from core.domain import TabularDataset
 from utils.helpers import make_tabular_dataset
 
 logger = logging.getLogger(__name__)

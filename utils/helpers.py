@@ -3,7 +3,7 @@ from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
-from common.domain import TabularDataset
+from core.domain import TabularDataset
 
 id = itertools.count(start=1)
 
