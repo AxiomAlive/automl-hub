@@ -22,5 +22,6 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-# imbaml = { git = "https://github.com/AxiomAlive/imbaml.git", branch = "ensembling" }
-imbaml = { path = "../imbaml", editable = true }
+imbaml = { git = "https://github.com/AxiomAlive/imbaml.git" }
+# for local development.
+# imbaml = { path = "../imbaml", editable = true }
