@@ -1,3 +1,4 @@
+import itertools
 import logging
 import pprint
 import sys
@@ -23,21 +24,44 @@ logger = logging.getLogger(__name__)
 
 
 class AutoMLRunner(ABC):
-    def __init__(self, automl='imbaml', log_to_file=True, *args, **kwargs):
-        self._fitted_model: Optional[FittedModel]
-        self._log_to_file = log_to_file
-        if automl == 'imbaml':
-            self._automl = Imbaml(*args, **kwargs)
-        elif automl == 'ag':
+    def __init__(
+        self,
+        automl,
+        metric,
+        log_to_file=True,
+        *args,
+        **kwargs
+    ):
+        def _validate_metrics(metric: str):
+            if metric not in ['f1', 'bal_acc', 'ap']:
+                raise ValueError(
+                    f"""
+                    Invalid value of metric parameter: {metric}.
+                    Available options: ['f1', 'bal_acc', 'ap'].
+                    """)
+        if isinstance(metric, list):
+            for m in metric:
+                _validate_metrics(m)
+            self._metrics = metric
+        else:
+            _validate_metrics(metric)
+            self._metrics = [metric]
+
+        if automl == 'ag':
             self._automl = AutoGluon(*args, **kwargs)
         elif automl == 'flaml':
             self._automl = FLAML()
+        elif automl == 'imbaml':
+            self._automl = Imbaml(*args, **kwargs)
         else:
             raise ValueError(
-                """
-                Invalid --automl option.
-                Options available: ['imbaml', 'ag', 'flaml'].
+                f"""
+                Invalid value of automl parameter: {automl}.
+                Options available: ['ag', 'flaml', 'imbaml'].
                 """)
+        
+        self._fitted_model: Optional[FittedModel]
+        self._log_to_file = log_to_file
 
     @abstractmethod
     def run(self) -> None:
@@ -57,7 +81,7 @@ class AutoMLRunner(ABC):
 
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
+            format='%(levelname)s - %(message)s',
             handlers=logging_handlers
         )
 
@@ -81,7 +105,7 @@ class AutoMLRunner(ABC):
             raise TypeError(f"pd.DataFrame or np.ndarray was expected. Got: {type(dataset.X)}")
 
         logger.info(f"{dataset.id}...Loaded dataset name: {dataset.name}.")
-        logger.info(f'Rows: {X_train.shape[0]}. Columns: {X_train.shape[1]}')
+        logger.debug(f'Rows: {X_train.shape[0]}. Columns: {X_train.shape[1]}')
 
         
         class_belongings = Counter(y_train)
@@ -92,7 +116,7 @@ class AutoMLRunner(ABC):
 
         iterator_of_class_belongings = iter(sorted(class_belongings))
         *_, positive_class_label = iterator_of_class_belongings
-        logger.info(f"Inferred positive class label: {positive_class_label}.")
+        logger.debug(f"Inferred positive class label: {positive_class_label}.")
 
         number_of_positives = class_belongings.get(positive_class_label)
         if number_of_positives is None:
@@ -110,14 +134,13 @@ class AutoMLRunner(ABC):
         training_dataset.size = training_dataset_size
         logger.debug(f"Train sample size is approximately {training_dataset.size} mb.")
 
-        temp_id = 1
+        id = itertools.count(start=1)
         for metric in self._metrics:
             task  = MLTask(
-                id=temp_id,
+                id=next(id),
                 dataset=training_dataset,
                 metric=metric
             )
-            temp_id += 1
 
             start_time = time.time()
             self._automl.fit(task)
@@ -131,9 +154,15 @@ class AutoMLRunner(ABC):
 
 
 class AutoMLSingleRunner(AutoMLRunner):
-    def __init__(self, dataset: TabularDataset, metric: str = 'f1', *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._metrics = [metric]
+    def __init__(
+        self,
+        dataset: TabularDataset,
+        automl: str = 'ag',
+        metric: Union[str, List[str]] = 'f1',
+        *args,
+        **kwargs
+    ):
+        super().__init__(automl, metric, *args, **kwargs)
         self._dataset = dataset
 
         self._configure_environment()
@@ -144,12 +173,15 @@ class AutoMLSingleRunner(AutoMLRunner):
 
 
 class AutoMLBenchmarkRunner(AutoMLRunner):
-    def __init__(self, metrics: Optional[List[str]], repository: TabularDatasetRepository = ZenodoRepository(), *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if metrics is None:
-            self._metrics = ['f1']
-        else:
-            self._metrics = metrics
+    def __init__(
+        self,
+        automl: str = 'ag',
+        metric: Union[str, List[str]] = 'f1',
+        repository: TabularDatasetRepository = ZenodoRepository(),
+        *args,
+        **kwargs
+    ):
+        super().__init__(automl, metric, *args, **kwargs)
         self._repository = repository
 
         self._configure_environment()
