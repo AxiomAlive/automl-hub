@@ -12,6 +12,7 @@ import pandas as pd
 from imblearn.datasets import fetch_datasets
 
 from common.domain import TabularDataset
+from utils.helpers import make_tabular_dataset
 
 logger = logging.getLogger(__name__)
 FittedModel = TypeVar('FittedModel', bound=Any)
@@ -20,14 +21,13 @@ FittedModel = TypeVar('FittedModel', bound=Any)
 class TabularDatasetRepository(ABC):
     def __init__(self, *args, **kwargs):
         self._datasets: List[TabularDataset] = []
-        self._last_id = itertools.count(start=1)
 
     @abstractmethod
-    def load_datasets(self, task_range: Optional[List[int]] = None) -> List[TabularDataset]:
+    def load_datasets(self, id_range: Optional[List[int]] = None) -> List[TabularDataset]:
         raise NotImplementedError()
 
     @abstractmethod
-    def load_dataset(self, task_id: Optional[int] = None) -> TabularDataset:
+    def load_dataset(self, id: Optional[int] = None) -> TabularDataset:
         raise NotImplementedError()
 
     @property
@@ -38,27 +38,26 @@ class TabularDatasetRepository(ABC):
 class ZenodoRepository(TabularDatasetRepository):
     def __init__(self):
         super().__init__()
-        self._raw_datasets = fetch_datasets(data_home='tasks/imbalanced-learning', verbose=True)
+        self._raw_datasets = fetch_datasets(data_home='datasets/imbalanced-learning', verbose=True)
 
-    def load_dataset(self, task_id: Optional[int] = None) -> TabularDataset:
+    def load_dataset(self, id: Optional[int] = None) -> TabularDataset:
         for i, (dataset_name, dataset_data) in enumerate(self._raw_datasets.items(), 1):
-            if i == task_id:
-                return TabularDataset(
-                    id=next(self._last_id),
+            if i == id:
+                return make_tabular_dataset(
                     name=dataset_name,
-                    X=dataset_data.get('data'),
-                    y=dataset_data.get('target')
+                    X=dataset_data.get("data"),
+                    y=dataset_data.get("target")
                 )
-            elif i > task_id:
-                raise ValueError(f"TabularDataset with id={task_id} is not available.")
+            elif i > id:
+                raise ValueError(f"TabularDataset(id={id}) is not available.")
 
-    def load_datasets(self, task_range: Optional[List[int]] = None) -> List[TabularDataset]:
-        if task_range is None:
+    def load_datasets(self, id_range: Optional[List[int]] = None) -> List[TabularDataset]:
+        if id_range is None:
             range_start = 1
             range_end = len(self._raw_datasets.keys()) + 1
-            task_range = range(range_start, range_end)
+            id_range = range(range_start, range_end)
             logger.info(f"Running tasks from {range_start} to {range_end}.")
-        for i in task_range:
+        for i in id_range:
             self._datasets.append(self.load_dataset(i))
         return self.datasets
 
@@ -71,33 +70,32 @@ class OpenMLRepository(TabularDatasetRepository):
         import openml
         openml.config.set_root_cache_directory("openml_cache")
 
-    def load_dataset(self, task_id: Optional[int] = None) -> TabularDataset:
+    def load_dataset(self, id: Optional[int] = None) -> TabularDataset:
         try:
             with multiprocessing.Pool(processes=1) as pool:
-                task = pool.apply_async(openml.tasks.get_task, [task_id]).get(timeout=1800)
+                task = pool.apply_async(openml.tasks.get_task, [id]).get(timeout=1800)
                 dataset = pool.apply_async(task.get_dataset, []).get(timeout=1800)
             X, y, categorical_indicator, dataset_feature_names = dataset.get_data(
                 target=dataset.default_target_attribute)
 
         except multiprocessing.TimeoutError:
-            logger.error(f"Fetch from OpenML timed out. TabularDataset id={task_id} was not loaded.")
+            logger.error(f"Fetch from OpenML timed out. TabularDataset id={id} was not loaded.")
             raise multiprocessing.TimeoutError()
         except Exception as exc:
             logger.error(pprint.pformat(traceback.format_exception(type(exc), exc, exc.__traceback__)))
             raise exc
 
-        return TabularDataset(
-            id=next(self._last_id),
+        return make_tabular_dataset(
             name=dataset.name,
             y_label=dataset.default_target_attribute,
             X=X,
             y=y
         )
 
-    def load_datasets(self, task_range: List[int] = None) -> List[TabularDataset]:
+    def load_datasets(self, id_range: List[int] = None) -> List[TabularDataset]:
         benchmark_suite = openml.study.get_suite(suite_id=self._suite_id)
-        for i, task_id in enumerate(benchmark_suite.tasks):
-            if task_range is not None and i not in task_range:
+        for i, id in enumerate(benchmark_suite.tasks):
+            if id_range is not None and i not in id_range:
                 continue
-            self._datasets.append(self.load_dataset(task_id))
+            self._datasets.append(self.load_dataset(id))
         return self.datasets
